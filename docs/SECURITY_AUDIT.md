@@ -1,10 +1,10 @@
 # Security Audit — `tinywasm/jwt`
 
 - **Date:** 2026-07-14
-- **Scope:** the whole public surface at commit `b5b3f0b` (post `docs/PLAN.md`
-  "interop vectors, unverified decode, clock skew and key rotation"), plus the
-  cryptographic primitives it delegates to (`tinywasm/crypto`, `tinywasm/base64`,
-  `tinywasm/fmt.Split`) as used from here.
+- **Scope:** the whole public surface as of commit `b5b3f0b` ("interop vectors,
+  unverified decode, clock leeway and key rotation" — the feature set released as
+  `v0.1.0`), plus the cryptographic primitives it delegates to (`tinywasm/crypto`,
+  `tinywasm/base64`, `tinywasm/fmt.Split`) as used from here.
 - **Method:** manual review of every code path that touches attacker-controlled
   input; independent recomputation of the interop vector outside this ecosystem
   (Python `hmac`/`hashlib`); dual-toolchain test runs (`gotest`, `gotest -tinygo`);
@@ -98,11 +98,13 @@ pure library deliberately does not have; the ±1s cases bound it from both sides
 ### F-5 — README contradicted the code — **fixed**
 
 `README.md` still said the library was "not yet usable from a frontend" and pointed
-to `docs/PLAN.md` for features that were already merged, and `Leeway`, `VerifyAny`
+to a planning document (since executed and deleted — plans are ephemeral in this
+ecosystem) for features that were already merged, and `Leeway`, `VerifyAny`
 and `FromBearer` were entirely undocumented — for a security library, undocumented
 semantics (does the leeway apply to `iat`? may I pass one secret in the list?) are
 how consumers misuse it. Status rewritten; the three APIs documented with their
-security contracts; TinyGo verification documented as required by plan task 7.
+security contracts; TinyGo verification is now documented in the README's Status
+section (a plain `gotest` cannot prove TinyGo compatibility).
 
 ## Informational (no change made)
 
@@ -113,17 +115,20 @@ security contracts; TinyGo verification documented as required by plan task 7.
   or signature string changes the signing input and fails authentication. It only
   makes `DecodeUnverified` (explicitly untrusted) accept token spellings the signer
   never produced. Strictness would belong upstream in `tinywasm/base64`, per the
-  ecosystem rule — reported, not worked around here.
+  ecosystem rule — reported, not worked around here. **Resolved upstream:**
+  `tinywasm/base64 v0.0.3` rejects non-canonical input (nonzero trailing bits,
+  RFC 4648 §3.5, equivalent to the stdlib's `RawURLEncoding.Strict()`); this module
+  consumes it since the `deps: update base64 to v0.0.3` commit.
 - **I-2 · `fmt.Split` legacy behavior for inputs shorter than 3 bytes** returns the
   whole string as a single element (`".."` → 1 part, not 3 empties). For this
   library the effect is fail-closed (part count ≠ 3 ⇒ `Forged`; covered by
   `RejectsMalformedShapes` and fuzz), but the semantics are surprising and worth an
   upstream note in `tinywasm/fmt`.
 - **I-3 · No `iat`/`nbf` validation.** A token with a future `iat` is accepted if
-  its signature and `exp` hold. Deliberate: leeway applies to `exp` only (plan task
-  3 forbids a general grace window), `nbf` is not in the closed claim set, and
-  `iat` is informational per RFC 7519. Revisit only if a consumer starts making
-  decisions from `Iat`.
+  its signature and `exp` hold. Deliberate: the leeway applies to `exp` only — by
+  design it must not become a general grace window — `nbf` is not in the closed
+  claim set, and `iat` is informational per RFC 7519. Revisit only if a consumer
+  starts making decisions from `Iat`.
 - **I-4 · No upper bound on token length.** `Verify` HMACs whatever it is handed;
   cost is linear and unavoidable for a MAC, and request-size limits belong to the
   HTTP layer above. No amplification exists (decode happens post-signature).
@@ -134,7 +139,11 @@ security contracts; TinyGo verification documented as required by plan task 7.
 - **I-6 · Secrets are not zeroized after use.** Go (and WASM linear memory) offers
   no reliable way to do so; accepted as a platform limit.
 
-## Plan execution check (acceptance criteria)
+## Acceptance check — v0.1.0 feature set
+
+These were the dispatch's acceptance criteria. They are restated here in full
+because plans are ephemeral in this ecosystem (the planning document is deleted
+once executed); this audit is the durable record of whether they were met.
 
 | Criterion | Status |
 |---|---|
@@ -143,12 +152,10 @@ security contracts; TinyGo verification documented as required by plan task 7.
 | 3. `DecodeUnverified` exists, documented as non-authorizing, tested | ✅ |
 | 4. `Leeway` and `VerifyAny` edge tests (incl. empty list) pass | ✅ after F-2/F-4 patches; `now == exp` case added |
 | 5. `FuzzVerify` 60s, no panic, never authenticates | ✅ after F-1 patch (was vacuous as shipped) |
-| 6. All new tests registered in `RunJWTTests` | ✅ (fuzz is native-only by design, per plan task 6) |
+| 6. All new tests registered in `RunJWTTests` | ✅ (fuzzing is native-only: a Go-toolchain feature) |
 | 7. Security invariant tests untouched and green | ✅ `git diff 0501ee4..` shows them unmodified |
 
-**Outstanding (blocked, not forgotten):** plan task 5 also ordered
-`tinywasm/user` to delete its manual `Bearer ` parsing
-(`server/middleware.go`) and call `jwt.FromBearer`. `user` pins `jwt v0.0.3`;
-`FromBearer` ships in the next release (plan tag `v0.1.0`, CodeJob-managed), so
-migrating now would break `user`'s build. Do it in `tinywasm/user` immediately
-after the release is published.
+**Follow-up in the consumer (not this repo):** `tinywasm/user` still carries its
+own manual `Bearer ` parsing in `server/middleware.go`; with `FromBearer`
+released in `v0.1.0` it must delete that copy and call `jwt.FromBearer`. Tracked
+in `tinywasm/user`'s own plan queue.

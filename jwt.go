@@ -170,14 +170,25 @@ func Verify(secret []byte, token string) (Claims, Outcome, error) {
 	return verifyWithPayload(parts[1])
 }
 
-// VerifyAny tries each secret and returns the verdict of the first that authenticates
-// the token. For rotation: pass the new secret first, the old one second.
+// VerifyAny tries each secret and accepts the token if any of them authenticates
+// it. For rotation: pass the new secret first, the old one second.
 //
-// It ensures constant-time traversal of all secrets to avoid leaking which one
-// matched through timing.
+// The empty-secret rule does not relax for coming in a list: any empty entry is
+// refused before the token is even looked at, exactly like Verify refuses an
+// empty secret regardless of the token's shape.
+//
+// Every secret is tried before answering — no early exit on the first match, and
+// the payload is decoded only after the full traversal — so the timing of the
+// verdict does not tell a caller (or an attacker measuring it) WHICH secret
+// matched.
 func VerifyAny(secrets [][]byte, token string) (Claims, Outcome, error) {
 	if len(secrets) == 0 {
 		return Claims{}, Forged, ErrEmptySecret
+	}
+	for _, s := range secrets {
+		if len(s) == 0 {
+			return Claims{}, Forged, ErrEmptySecret
+		}
 	}
 
 	parts := fmt.Split(token, ".")
@@ -188,33 +199,16 @@ func VerifyAny(secrets [][]byte, token string) (Claims, Outcome, error) {
 	signingInput := parts[0] + "." + parts[1]
 	sig := []byte(parts[2])
 
-	var bestClaims Claims
-	var bestOutcome Outcome
-
-	found := false
+	matched := false
 	for _, s := range secrets {
-		if len(s) == 0 {
-			return Claims{}, Forged, ErrEmptySecret
-		}
-
-		expected := sign(s, signingInput)
-		if crypto.HMACEqual(sig, []byte(expected)) {
-			// Signature matches. Now we need to know if it's Valid or Expired.
-			// We only care about the result if it's the first match we found.
-			// But we MUST continue the loop to keep constant time.
-			if !found {
-				c, out, _ := verifyWithPayload(parts[1])
-				bestClaims = c
-				bestOutcome = out
-				found = true
-			}
+		if crypto.HMACEqual(sig, []byte(sign(s, signingInput))) {
+			matched = true
 		}
 	}
-
-	if !found {
+	if !matched {
 		return Claims{}, Forged, nil
 	}
-	return bestClaims, bestOutcome, nil
+	return verifyWithPayload(parts[1])
 }
 
 // verifyWithPayload is a helper for Verify and VerifyAny that decodes and checks

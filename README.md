@@ -54,6 +54,41 @@ if err == nil {
 **Warning:** `DecodeUnverified` does NOT check the signature. Treat the result as a
 display hint, never as an authorization decision.
 
+The split is:
+
+- **Frontend/edge without the secret** → `DecodeUnverified`, UI only (when do I expire?).
+- **Backend/edge with the secret** → `Verify`, always, for any decision.
+
+### Clock skew
+
+`Verify` tolerates `jwt.Leeway` (60s) of clock drift **on `exp` only**: an edge
+worker's clock and the backend's are never quite the same, and without tolerance a
+freshly minted token can produce intermittent 401s. It is a constant, not a
+parameter: the zero value of an optional knob would reintroduce exactly those 401s.
+
+### Key rotation
+
+Changing the secret must not log every user out. `VerifyAny` accepts a list —
+new secret first, old one second — and emits with the new one while sessions signed
+with the old one stay valid:
+
+```go
+claims, outcome, err := jwt.VerifyAny([][]byte{newSecret, oldSecret}, token)
+```
+
+The empty-secret refusal does not relax for coming in a list, every secret is tried
+before answering (no timing short-circuit on the first match), and an expired token
+authentic under *any* of the secrets is still `Expired`, never `Forged`.
+
+### Authorization header
+
+```go
+token, ok := jwt.FromBearer(r.Header.Get("Authorization"))
+```
+
+Case-insensitive on the scheme (`bearer` is legal per RFC 6750); a missing or
+non-Bearer header yields `ok == false` — the token is never guessed.
+
 An expired token is not an error: it is `Verify` working correctly. Keeping expiry out
 of the `error` channel is what stops a caller writing `if err != nil { alarm() }` and
 reporting every routine session expiry as a forgery — which is exactly the bug this
@@ -87,17 +122,25 @@ invite a caller to use it.
 
 ## Status
 
-Signing and verifying are done and tested (native + WASM).
+Complete for its scope: sign, verify, unverified decode, clock-skew leeway, key
+rotation and Bearer extraction — tested on native, WASM **and TinyGo** (the full
+suite is green under `gotest -tinygo`, which compiles the WASM tests with the TinyGo
+toolchain; a plain `gotest` cannot prove that).
 
-**Not yet usable from a frontend that has no secret**, and not yet proven to
-interoperate with other JWT implementations. Both, plus clock-skew tolerance and key
-rotation, are specified in [docs/PLAN.md](docs/PLAN.md).
+Interoperability is proven with known-answer vectors (RFC 7515): a token minted by an
+external implementation verifies, and `Sign` over fixed claims reproduces the
+expected string byte for byte. `Verify` is additionally fuzzed
+(`tests/fuzz_test.go`).
+
+A security review of the whole surface lives in
+[docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
 
 ## Testing
 
 ```bash
 gotest          # both suites: native + wasm
 gotest -tinygo  # compiles the WASM suite with TinyGo
+go test -run='^$' -fuzz=FuzzVerify -fuzztime=60s ./tests  # fuzz the verifier
 ```
 
 See [AGENTS.md](AGENTS.md) for the constraints any change must respect.

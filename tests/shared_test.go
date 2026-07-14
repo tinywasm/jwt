@@ -35,41 +35,40 @@ func RunJWTTests(t *testing.T) {
 
 var secret = []byte("a-256-bit-secret-for-the-test-abc")
 
+// The leeway applies ONLY to exp, and only in the token's favour by Leeway seconds.
+//
+// The library reads the real clock (no injection point — it is pure math over its
+// arguments), so libNow is recovered from a freshly signed Iat and every boundary
+// below leaves one second of slack for the clock to tick between Sign and Verify.
+// The exact `now == exp+Leeway` flip cannot be pinned without a fake clock: a
+// one-second tick mid-test would legitimately move the verdict.
 func test_Leeway(t *testing.T) {
-	// Let's create a token that just expired 30s ago. It should be VALID due to 60s leeway.
-	// We need to know what the lib thinks "now" is.
-
 	tok, _ := jwt.Sign(secret, jwt.NewClaims("u1", 3600))
 	c, _, _ := jwt.Verify(secret, tok)
 	libNow := c.Iat
 
-	// 1. Expired 30s ago (within 60s leeway) -> Valid
-	t1, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3630, Exp: libNow - 30})
+	// Expired Leeway-1s ago -> Valid (survives a 1s tick: 60 is still not > 60).
+	t1, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3600, Exp: libNow - (jwt.Leeway - 1)})
 	if _, out, _ := jwt.Verify(secret, t1); out != jwt.Valid {
-		t.Errorf("expired 30s ago should be valid (leeway 60s), got %v", out)
+		t.Errorf("expired Leeway-1s ago should be valid, got %v", out)
 	}
 
-	// 2. Expired 59s ago (within 60s leeway) -> Valid
-	t2, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3659, Exp: libNow - 59})
-	if _, out, _ := jwt.Verify(secret, t2); out != jwt.Valid {
-		t.Errorf("expired 59s ago should be valid, got %v", out)
+	// Expired Leeway+1s ago -> Expired.
+	t2, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3600, Exp: libNow - (jwt.Leeway + 1)})
+	if _, out, _ := jwt.Verify(secret, t2); out != jwt.Expired {
+		t.Errorf("expired Leeway+1s ago should be expired, got %v", out)
 	}
 
-	// 3. Expired 61s ago (outside 60s leeway) -> Expired
-	t3, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3661, Exp: libNow - 61})
-	if _, out, _ := jwt.Verify(secret, t3); out != jwt.Expired {
-		t.Errorf("expired 61s ago should be expired, got %v", out)
+	// now == exp exactly -> Valid: expiring THIS second is not expired.
+	t3, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3600, Exp: libNow})
+	if _, out, _ := jwt.Verify(secret, t3); out != jwt.Valid {
+		t.Errorf("token expiring right now should be valid, got %v", out)
 	}
 
-	// 4. Exactly at exp -> Valid (now > exp + Leeway)
-	// if now == exp, then now > exp + 60 is false, so it's valid.
-	// Actually the check is `if now() > c.Exp+Leeway { return Expired }`
-	// So if now == exp + Leeway, it's still Valid.
-	// If now == exp + Leeway + 1, it's Expired.
-
-	t4, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3660, Exp: libNow - 60})
-	if _, out, _ := jwt.Verify(secret, t4); out != jwt.Valid {
-		t.Errorf("expired exactly 60s ago should be valid, got %v", out)
+	// Far beyond the leeway -> Expired, and the claims stay zero.
+	c4o, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3600, Exp: libNow - 3*jwt.Leeway})
+	if c4, out, _ := jwt.Verify(secret, c4o); out != jwt.Expired || c4.Sub != "" {
+		t.Errorf("well past leeway: got %v claims %+v", out, c4)
 	}
 }
 
@@ -128,6 +127,13 @@ func test_VerifyAny(t *testing.T) {
 	// 5. List with empty secret
 	if _, _, err := jwt.VerifyAny([][]byte{s1, nil}, t1); err != jwt.ErrEmptySecret {
 		t.Errorf("VerifyAny(list with nil) should be ErrEmptySecret, got %v", err)
+	}
+
+	// 5b. The empty-secret refusal must not depend on the token's shape: a malformed
+	// token must not short-circuit past the caller-bug check (regression — the check
+	// used to live inside the per-secret loop, after the shape test).
+	if _, _, err := jwt.VerifyAny([][]byte{nil}, "not-even-a-token"); err != jwt.ErrEmptySecret {
+		t.Errorf("VerifyAny(nil secret, malformed token) should be ErrEmptySecret, got %v", err)
 	}
 
 	// 6. Expired but authentic with second secret

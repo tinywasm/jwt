@@ -66,6 +66,11 @@ var (
 // DefaultTTL is the lifetime NewClaims uses when ttl <= 0.
 const DefaultTTL = 86400 // 24h, in seconds
 
+// Leeway is the clock skew tolerated when checking exp.
+// It is a constant rather than a parameter because the zero value (no leeway)
+// would cause intermittent 401s in distributed systems due to clock drift.
+const Leeway = 60
+
 const (
 	algHS256 = "HS256"
 	typJWT   = "JWT"
@@ -162,9 +167,54 @@ func Verify(secret []byte, token string) (Claims, Outcome, error) {
 		return Claims{}, Forged, nil
 	}
 
-	// Only AFTER the signature is proven do we decode anything: never parse what you
-	// have not authenticated.
-	raw, err := base64.URLDecode(parts[1])
+	return verifyWithPayload(parts[1])
+}
+
+// VerifyAny tries each secret and accepts the token if any of them authenticates
+// it. For rotation: pass the new secret first, the old one second.
+//
+// The empty-secret rule does not relax for coming in a list: any empty entry is
+// refused before the token is even looked at, exactly like Verify refuses an
+// empty secret regardless of the token's shape.
+//
+// Every secret is tried before answering — no early exit on the first match, and
+// the payload is decoded only after the full traversal — so the timing of the
+// verdict does not tell a caller (or an attacker measuring it) WHICH secret
+// matched.
+func VerifyAny(secrets [][]byte, token string) (Claims, Outcome, error) {
+	if len(secrets) == 0 {
+		return Claims{}, Forged, ErrEmptySecret
+	}
+	for _, s := range secrets {
+		if len(s) == 0 {
+			return Claims{}, Forged, ErrEmptySecret
+		}
+	}
+
+	parts := fmt.Split(token, ".")
+	if len(parts) != 3 {
+		return Claims{}, Forged, nil
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	sig := []byte(parts[2])
+
+	matched := false
+	for _, s := range secrets {
+		if crypto.HMACEqual(sig, []byte(sign(s, signingInput))) {
+			matched = true
+		}
+	}
+	if !matched {
+		return Claims{}, Forged, nil
+	}
+	return verifyWithPayload(parts[1])
+}
+
+// verifyWithPayload is a helper for Verify and VerifyAny that decodes and checks
+// expiry once the signature is already proven.
+func verifyWithPayload(payloadB64 string) (Claims, Outcome, error) {
+	raw, err := base64.URLDecode(payloadB64)
 	if err != nil {
 		return Claims{}, Forged, nil
 	}
@@ -173,17 +223,55 @@ func Verify(secret []byte, token string) (Claims, Outcome, error) {
 		return Claims{}, Forged, nil
 	}
 
-	// A token with no expiry is not "eternal", it is malformed: otherwise a payload
-	// that simply omits `exp` would grant a session that never ends.
 	if c.Exp <= 0 || c.Sub == "" {
 		return Claims{}, Forged, nil
 	}
-	if now() > c.Exp {
-		// Authentic, so the subject is real — but the claims are NOT returned: an expired
-		// token authorizes nothing, and handing them back invites a caller to use them.
+	if now() > c.Exp+Leeway {
 		return Claims{}, Expired, nil
 	}
 	return c, Valid, nil
+}
+
+// FromBearer extracts the token from an Authorization header value.
+// A missing or non-Bearer header yields ok == false; the token is never guessed.
+// Case-insensitive for the "Bearer " scheme.
+func FromBearer(authorizationHeader string) (token string, ok bool) {
+	const bearer = "bearer "
+	if len(authorizationHeader) <= len(bearer) {
+		return "", false
+	}
+	low := fmt.ToLower(authorizationHeader[:len(bearer)])
+	if low != bearer {
+		return "", false
+	}
+	return authorizationHeader[len(bearer):], true
+}
+
+// DecodeUnverified reads the claims WITHOUT checking the signature. The token is
+// UNTRUSTED input: treat the result as a display hint, never as an authorization
+// decision.
+//
+// It follows the same shape requirements as Verify (3 parts, base64 valid, sub and exp
+// present).
+func DecodeUnverified(token string) (Claims, error) {
+	parts := fmt.Split(token, ".")
+	if len(parts) != 3 {
+		return Claims{}, fmt.Err("jwt", "decode", "malformed")
+	}
+
+	raw, err := base64.URLDecode(parts[1])
+	if err != nil {
+		return Claims{}, err
+	}
+	var c Claims
+	if err := json.Decode(string(raw), &c); err != nil {
+		return Claims{}, err
+	}
+
+	if c.Exp <= 0 || c.Sub == "" {
+		return Claims{}, fmt.Err("jwt", "decode", "missing-claims")
+	}
+	return c, nil
 }
 
 // sign is the ONE place the MAC is computed, so signing and verifying can never

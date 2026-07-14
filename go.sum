@@ -1,0 +1,12 @@
+github.com/tinywasm/base64 v0.0.2 h1:HqvsqlF48Tw2dwfsK0o/UIy1VVb5NbrYgT5lGhvwlKc=
+github.com/tinywasm/base64 v0.0.2/go.mod h1:p6s8iOD4F6s6smO80R3bYd8ZGZQxXCBt+5KxFQ4vCHU=
+github.com/tinywasm/crypto v0.0.20 h1:+HRwnFIHIrUgzbPmXzLFVAEpS/Njo7JQNYjtD3ANkI0=
+github.com/tinywasm/crypto v0.0.20/go.mod h1:lI2lsqDtvnmdyLW/u83L4JvY18s/nvTTh8LMZBueXLg=
+github.com/tinywasm/fmt v0.25.3 h1:CkyjeKvSFM8BxRWleb4gaPak8Fe+VKPWvnW0UU7KvQE=
+github.com/tinywasm/fmt v0.25.3/go.mod h1:L2GCAi6asgytPV6TVvGrRq5Ml+DkUt1Ijo5i/2J1jOY=
+github.com/tinywasm/json v0.5.11 h1:hG8RYmwtbxs4pC/i3EgQgsWe2C42LhUSA3i+YzPt818=
+github.com/tinywasm/json v0.5.11/go.mod h1:6UeL7bWypYLIWsF12pOOwpYJci8YmW02+d85dShStL8=
+github.com/tinywasm/model v0.0.12 h1:oKcZZ3VTzpffoAkeduz1QvQEY+cMQbLlhmzW3HvnEms=
+github.com/tinywasm/model v0.0.12/go.mod h1:wkYZLW6CWVrlx5TiLEBL71KgDxhjUcFtY3KXZKpkCXA=
+github.com/tinywasm/time v0.5.0 h1:M17DNgKrMYfkCK42V6miL9AcwfN/FHghbKOSTXJrkMo=
+github.com/tinywasm/time v0.5.0/go.mod h1:vxGAkKA40im4ObiTS6hcsJYiIsVVLSz/A63JC/+TwvA=

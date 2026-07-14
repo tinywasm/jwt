@@ -26,9 +26,186 @@ func RunJWTTests(t *testing.T) {
 	t.Run("RejectsSplicedSignature", test_RejectsSplicedSignature)
 	t.Run("RejectsMissingExp", test_RejectsMissingExp)
 	t.Run("NoClaimsUnlessValid", test_NoClaimsUnlessValid)
+	t.Run("Interop", test_Interop)
+	t.Run("DecodeUnverified", test_DecodeUnverified)
+	t.Run("Leeway", test_Leeway)
+	t.Run("VerifyAny", test_VerifyAny)
+	t.Run("FromBearer", test_FromBearer)
 }
 
 var secret = []byte("a-256-bit-secret-for-the-test-abc")
+
+func test_Leeway(t *testing.T) {
+	// Let's create a token that just expired 30s ago. It should be VALID due to 60s leeway.
+	// We need to know what the lib thinks "now" is.
+
+	tok, _ := jwt.Sign(secret, jwt.NewClaims("u1", 3600))
+	c, _, _ := jwt.Verify(secret, tok)
+	libNow := c.Iat
+
+	// 1. Expired 30s ago (within 60s leeway) -> Valid
+	t1, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3630, Exp: libNow - 30})
+	if _, out, _ := jwt.Verify(secret, t1); out != jwt.Valid {
+		t.Errorf("expired 30s ago should be valid (leeway 60s), got %v", out)
+	}
+
+	// 2. Expired 59s ago (within 60s leeway) -> Valid
+	t2, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3659, Exp: libNow - 59})
+	if _, out, _ := jwt.Verify(secret, t2); out != jwt.Valid {
+		t.Errorf("expired 59s ago should be valid, got %v", out)
+	}
+
+	// 3. Expired 61s ago (outside 60s leeway) -> Expired
+	t3, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3661, Exp: libNow - 61})
+	if _, out, _ := jwt.Verify(secret, t3); out != jwt.Expired {
+		t.Errorf("expired 61s ago should be expired, got %v", out)
+	}
+
+	// 4. Exactly at exp -> Valid (now > exp + Leeway)
+	// if now == exp, then now > exp + 60 is false, so it's valid.
+	// Actually the check is `if now() > c.Exp+Leeway { return Expired }`
+	// So if now == exp + Leeway, it's still Valid.
+	// If now == exp + Leeway + 1, it's Expired.
+
+	t4, _ := jwt.Sign(secret, jwt.Claims{Sub: "u1", Iat: libNow - 3660, Exp: libNow - 60})
+	if _, out, _ := jwt.Verify(secret, t4); out != jwt.Valid {
+		t.Errorf("expired exactly 60s ago should be valid, got %v", out)
+	}
+}
+
+func test_FromBearer(t *testing.T) {
+	cases := []struct {
+		in  string
+		tok string
+		ok  bool
+	}{
+		{"Bearer abc", "abc", true},
+		{"bearer abc", "abc", true},
+		{"BEARER abc", "abc", true},
+		{"Bearer  abc", " abc", true},
+		{"Bearer ", "", false}, // too short
+		{"Basic abc", "", false},
+		{"", "", false},
+		{"Bearer", "", false},
+	}
+
+	for _, tc := range cases {
+		tok, ok := jwt.FromBearer(tc.in)
+		if ok != tc.ok || tok != tc.tok {
+			t.Errorf("FromBearer(%q): got (%q, %v), want (%q, %v)", tc.in, tok, ok, tc.tok, tc.ok)
+		}
+	}
+}
+
+func test_VerifyAny(t *testing.T) {
+	s1 := []byte("secret-1-111111111111111111111111")
+	s2 := []byte("secret-2-222222222222222222222222")
+	secrets := [][]byte{s1, s2}
+
+	t1, _ := jwt.Sign(s1, jwt.NewClaims("u1", 3600))
+	t2, _ := jwt.Sign(s2, jwt.NewClaims("u2", 3600))
+
+	// 1. First secret matches
+	if c, out, _ := jwt.VerifyAny(secrets, t1); out != jwt.Valid || c.Sub != "u1" {
+		t.Errorf("VerifyAny(s1) failed: %v, %q", out, c.Sub)
+	}
+
+	// 2. Second secret matches
+	if c, out, _ := jwt.VerifyAny(secrets, t2); out != jwt.Valid || c.Sub != "u2" {
+		t.Errorf("VerifyAny(s2) failed: %v, %q", out, c.Sub)
+	}
+
+	// 3. None match
+	if _, out, _ := jwt.VerifyAny(secrets, "a.b.c"); out != jwt.Forged {
+		t.Errorf("VerifyAny(wrong) should be forged, got %v", out)
+	}
+
+	// 4. Empty list
+	if _, _, err := jwt.VerifyAny(nil, t1); err != jwt.ErrEmptySecret {
+		t.Errorf("VerifyAny(nil) should be ErrEmptySecret, got %v", err)
+	}
+
+	// 5. List with empty secret
+	if _, _, err := jwt.VerifyAny([][]byte{s1, nil}, t1); err != jwt.ErrEmptySecret {
+		t.Errorf("VerifyAny(list with nil) should be ErrEmptySecret, got %v", err)
+	}
+
+	// 6. Expired but authentic with second secret
+	tok, _ := jwt.Sign(s2, jwt.NewClaims("u1", 3600))
+	c, _, _ := jwt.Verify(s2, tok)
+	libNow := c.Iat
+
+	tExp, _ := jwt.Sign(s2, jwt.Claims{Sub: "u1", Iat: libNow - 4000, Exp: libNow - 100})
+	if _, out, _ := jwt.VerifyAny(secrets, tExp); out != jwt.Expired {
+		t.Errorf("VerifyAny(expired) should be expired, got %v", out)
+	}
+}
+
+func test_DecodeUnverified(t *testing.T) {
+	tok, _ := jwt.Sign(secret, jwt.NewClaims("u1", 3600))
+
+	// 1. Valid token
+	c, err := jwt.DecodeUnverified(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Sub != "u1" {
+		t.Errorf("sub: got %q, want %q", c.Sub, "u1")
+	}
+
+	// 2. Forged token (tampered but signature not checked)
+	parts := split3(t, tok)
+	tampered := parts[0] + "." +
+		base64.URLEncode([]byte(`{"sub":"admin","exp":99999999999,"iat":1}`)) + "." +
+		"invalid-signature"
+
+	c2, err := jwt.DecodeUnverified(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Sub != "admin" {
+		t.Errorf("sub: got %q, want %q", c2.Sub, "admin")
+	}
+
+	// 3. Malformed
+	if _, err := jwt.DecodeUnverified("a.b"); err == nil {
+		t.Error("accepted malformed token")
+	}
+}
+
+func test_Interop(t *testing.T) {
+	// Generated with external tool:
+	// Header:  {"alg":"HS256","typ":"JWT"}
+	// Payload: {"sub":"u1","exp":2524608000,"iat":1514764800}
+	// Secret:  "secret"
+	const knownToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1MSIsImV4cCI6MjUyNDYwODAwMCwiaWF0IjoxNTE0NzY0ODAwfQ.wvlTazsZyqSxT3lGtB95XwkK1S3GTnxP5CTPTksIC2c"
+	knownSecret := []byte("secret")
+
+	// 1. Known token must verify
+	c, out, err := jwt.Verify(knownSecret, knownToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != jwt.Valid {
+		t.Fatalf("known token failed to verify: %v", out)
+	}
+	if c.Sub != "u1" || c.Exp != 2524608000 || c.Iat != 1514764800 {
+		t.Errorf("claims mismatch: %+v", c)
+	}
+
+	// 2. Sign must produce exact match
+	signed, err := jwt.Sign(knownSecret, jwt.Claims{
+		Sub: "u1",
+		Exp: 2524608000,
+		Iat: 1514764800,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed != knownToken {
+		t.Errorf("sign produced different token\ngot:  %s\nwant: %s", signed, knownToken)
+	}
+}
 
 func test_RoundTrip(t *testing.T) {
 	tok, err := jwt.Sign(secret, jwt.NewClaims("u1", 3600))

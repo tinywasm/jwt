@@ -39,6 +39,21 @@ The two return channels mean different things, and that separation **is** the AP
 | `error` | **the caller** is broken | empty secret — a configuration bug |
 | `Outcome` | what **the token** is | `Valid`, `Expired`, `Forged` |
 
+### Frontend / Unverified Decode
+
+If you are on the frontend (browser) or an edge worker without access to the secret,
+you can still read the claims to show the user's name or know when the session expires:
+
+```go
+claims, err := jwt.DecodeUnverified(token)
+if err == nil {
+    fmt.Println("Expires at:", claims.Exp)
+}
+```
+
+**Warning:** `DecodeUnverified` does NOT check the signature. Treat the result as a
+display hint, never as an authorization decision.
+
 An expired token is not an error: it is `Verify` working correctly. Keeping expiry out
 of the `error` channel is what stops a caller writing `if err != nil { alarm() }` and
 reporting every routine session expiry as a forgery — which is exactly the bug this

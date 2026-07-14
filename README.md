@@ -18,16 +18,33 @@ if err != nil {
     return err
 }
 
-claims, err := jwt.Verify(secret, token)
-switch err {
-case nil:
+claims, outcome, err := jwt.Verify(secret, token)
+if err != nil {
+    return err // YOU are broken (empty secret) — a config bug, not a bad token
+}
+switch outcome {
+case jwt.Valid:
     use(claims.Sub)
-case jwt.ErrTokenExpired:
-    // not an attack: the session ended, ask for a new login
-case jwt.ErrInvalidToken:
-    // malformed or unauthentic — do not tell the caller which
+case jwt.Expired:
+    // not an attack: the session simply ended, ask for a new login
+case jwt.Forged:
+    // unauthentic — raise the alarm
 }
 ```
+
+The two return channels mean different things, and that separation **is** the API:
+
+| Channel | Means | Example |
+|---|---|---|
+| `error` | **the caller** is broken | empty secret — a configuration bug |
+| `Outcome` | what **the token** is | `Valid`, `Expired`, `Forged` |
+
+An expired token is not an error: it is `Verify` working correctly. Keeping expiry out
+of the `error` channel is what stops a caller writing `if err != nil { alarm() }` and
+reporting every routine session expiry as a forgery — which is exactly the bug this
+library was extracted to fix.
+
+`Forged` is the **zero value**: an unset verdict denies.
 
 ## Design
 
@@ -48,10 +65,10 @@ The library refuses rather than returning something that merely looks fine:
 | token without `exp` | it is malformed, not eternal |
 | any signature mismatch | compared in constant time (`crypto.HMACEqual`) |
 
-`ErrTokenExpired` is deliberately distinct from `ErrInvalidToken`: expiry is not an
-attack, and the caller must be able to tell "log in again" from "this is a forgery".
-Every other failure collapses into `ErrInvalidToken` on purpose — distinguishing
-"bad signature" from "bad base64" tells an attacker where they stand.
+`Forged` does **not** say *why*: distinguishing "bad signature" from "bad base64" tells
+an attacker where they stand. And no outcome other than `Valid` returns usable claims —
+an expired or forged token authorizes nobody, so handing its subject back would only
+invite a caller to use it.
 
 ## Status
 

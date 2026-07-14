@@ -56,10 +56,27 @@ not make forging easy**.
 6. **The MAC comparison is constant-time** (`crypto.HMACEqual`). A `==`, a
    `bytes.Equal`, or an early return on the first differing byte is a **timing
    oracle** and will be rejected in review.
-7. **`ErrTokenExpired` stays distinct from `ErrInvalidToken`.** Expiry is not an
-   attack: the caller must be able to tell "log in again" from "this is a forgery".
-   Every *other* failure collapses into `ErrInvalidToken` on purpose — telling "bad
-   signature" apart from "bad base64" tells an attacker where they stand.
+7. **The verdict on the token never travels in the `error` channel.** `Verify` returns
+   `(Claims, Outcome, error)`, and the split is load-bearing:
+   - `error` = **the caller** is broken (empty secret). A configuration bug.
+   - `Outcome` = what **the token** is: `Valid`, `Expired`, `Forged`.
+
+   This is not decoration. When expiry was a sentinel error, `tinywasm/user` wrote
+   `if err != nil { EventJWTTampered }` and reported **every routine session expiry as
+   a forgery** — firing the loudest alarm in the system on its quietest event and
+   burying real attacks in the noise. With a closed enum, that collapse is something
+   you must deliberately write instead of something you get by forgetting.
+
+   **Never fold `Outcome` back into `error` "for convenience".** Regression test:
+   `ExpiredIsNotForged`.
+8. **`Forged` is the zero value of `Outcome`** — closed by default: an unset verdict
+   denies. Never reorder the enum so that `Valid` lands on zero. Regression test:
+   `ZeroOutcomeIsForged`.
+9. **Only `Valid` returns claims.** Expired and forged tokens come back with a zero
+   `Claims`: they authorize nobody, and handing back a subject invites a caller to use
+   it anyway. Regression test: `NoClaimsUnlessValid`.
+10. **`Forged` does not say why.** Telling "bad signature" apart from "bad base64" tells
+    an attacker where they stand.
 
 ## The stdlib rule
 

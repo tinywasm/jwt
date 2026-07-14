@@ -111,9 +111,9 @@ valor cero tiene que ser el seguro y el útil a la vez.
 ### 4. Rotación de claves sin cerrar sesiones
 
 ```go
-// VerifyAny tries each secret in order and returns the claims of the first that
-// authenticates the token. For rotation: pass the new secret first, the old one second.
-func VerifyAny(secrets [][]byte, token string) (Claims, error)
+// VerifyAny tries each secret and returns the verdict of the first that authenticates
+// the token. For rotation: pass the new secret first, the old one second.
+func VerifyAny(secrets [][]byte, token string) (Claims, Outcome, error)
 ```
 
 Invariantes que el test debe fijar:
@@ -122,8 +122,9 @@ Invariantes que el test debe fijar:
   la regla del secreto vacío no se relaja por venir en una lista.
 - Recorre **todos** los secretos antes de fallar: nada de cortocircuitos que filtren por
   tiempo cuál de ellos era el bueno.
-- `ErrTokenExpired` sigue siendo distinguible: si la firma es válida con alguno pero el
-  token expiró, el error es *expirado*, no *inválido*.
+- El desenlace sigue siendo `Expired`, no `Forged`, si la firma es válida con alguno de
+  los secretos pero el token caducó. Colapsarlos reintroduce el bug que dio origen a
+  `Outcome` (ver `AGENTS.md`, invariante 7).
 
 ### 5. `FromBearer` — quitar el parseo duplicado del consumidor
 
@@ -132,8 +133,8 @@ formato, no de la app:
 
 ```go
 // FromBearer extracts the token from an Authorization header value.
-// Returns ErrInvalidToken if the header is absent or not a Bearer credential.
-func FromBearer(authorizationHeader string) (string, error)
+// A missing or non-Bearer header yields ok == false; the token is never guessed.
+func FromBearer(authorizationHeader string) (token string, ok bool)
 ```
 
 Insensible a mayúsculas en el esquema (`bearer` es legal según RFC 6750). Cuando esté,

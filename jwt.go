@@ -14,19 +14,49 @@ import (
 	"github.com/tinywasm/time"
 )
 
+// Outcome is the CLOSED set of verdicts on a token. It is not an error: a token being
+// expired or forged is this function working correctly, and the caller must act
+// differently on each — "log in again" is not "you are under attack".
+//
+// It is an enum rather than a sentinel error on purpose. With `(Claims, error)` a
+// caller can write `if err != nil { alarm() }` and collapse a routine expiry into a
+// forgery alarm — which is exactly what happened in tinywasm/user, drowning real
+// tampering in noise. A closed type makes that collapse something you have to
+// deliberately write, not something you get by forgetting.
+type Outcome uint8
+
+const (
+	// Forged is the ZERO VALUE: closed by default. Anything not proven authentic —
+	// wrong shape, bad signature, undecodable payload, missing claims — is this.
+	// The verdict does not say WHICH: telling "bad signature" apart from "bad base64"
+	// tells an attacker where they stand.
+	Forged Outcome = iota
+
+	// Valid: authentic and in date. The Claims returned alongside are trustworthy.
+	Valid
+
+	// Expired: authentic, but past its `exp`. NOT an attack — the session simply ended.
+	Expired
+)
+
+func (o Outcome) String() string {
+	switch o {
+	case Valid:
+		return "valid"
+	case Expired:
+		return "expired"
+	default:
+		return "forged"
+	}
+}
+
 var (
-	// ErrInvalidToken covers every malformed or unauthentic token: wrong shape, bad
-	// signature, undecodable payload. It is deliberately ONE error: telling
-	// "bad signature" apart from "bad base64" tells an attacker where they stand.
-	ErrInvalidToken = fmt.Err("jwt", "token", "invalid")
-
-	// ErrTokenExpired is separate because it is NOT an attack: the caller must be able
-	// to tell "your session ended, log in again" from "this token is a forgery".
-	ErrTokenExpired = fmt.Err("jwt", "token", "expired")
-
 	// ErrEmptySecret is a refusal, not a failure. HMAC over an empty key is valid math:
 	// it produces a token that verifies. A zero-value config would therefore mint
 	// tokens that ANYONE can forge, and nothing would ever look wrong.
+	//
+	// It is an `error`, not an Outcome, because it means THE CALLER is broken — not the
+	// token. The two must never share a channel.
 	ErrEmptySecret = fmt.Err("jwt", "secret", "empty")
 
 	// ErrEmptySubject: a token that authenticates nobody is never what the caller meant.
@@ -104,47 +134,56 @@ func Sign(secret []byte, c Claims) (string, error) {
 	return signingInput + "." + sign(secret, signingInput), nil
 }
 
-// Verify authenticates a token and returns its claims.
+// Verify authenticates a token and returns its verdict.
+//
+// The two return channels mean different things, and that separation IS the API:
+//
+//	error   — THE CALLER is broken (an empty secret). A configuration bug.
+//	Outcome — what the TOKEN is: Valid, Expired, or Forged. Never an error.
+//
+// Claims are meaningful only when the Outcome is Valid; otherwise they are zero.
 //
 // The `alg` field of the header is READ BY NOBODY, and that is the point: this
 // verifier always recomputes HS256. Choosing the algorithm from a value carried
 // inside the untrusted token is the classic alg-confusion vulnerability — it is how
 // `{"alg":"none"}` forgeries get accepted. Do not "fix" this by parsing the header.
-func Verify(secret []byte, token string) (Claims, error) {
-	var c Claims
+func Verify(secret []byte, token string) (Claims, Outcome, error) {
 	if len(secret) == 0 {
-		return c, ErrEmptySecret
+		return Claims{}, Forged, ErrEmptySecret
 	}
 
 	parts := fmt.Split(token, ".")
 	if len(parts) != 3 {
-		return c, ErrInvalidToken
+		return Claims{}, Forged, nil
 	}
 
 	expected := sign(secret, parts[0]+"."+parts[1])
 	if !crypto.HMACEqual([]byte(parts[2]), []byte(expected)) {
-		return c, ErrInvalidToken
+		return Claims{}, Forged, nil
 	}
 
 	// Only AFTER the signature is proven do we decode anything: never parse what you
 	// have not authenticated.
 	raw, err := base64.URLDecode(parts[1])
 	if err != nil {
-		return c, ErrInvalidToken
+		return Claims{}, Forged, nil
 	}
+	var c Claims
 	if err := json.Decode(string(raw), &c); err != nil {
-		return c, ErrInvalidToken
+		return Claims{}, Forged, nil
 	}
 
 	// A token with no expiry is not "eternal", it is malformed: otherwise a payload
 	// that simply omits `exp` would grant a session that never ends.
 	if c.Exp <= 0 || c.Sub == "" {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, Forged, nil
 	}
 	if now() > c.Exp {
-		return Claims{}, ErrTokenExpired
+		// Authentic, so the subject is real — but the claims are NOT returned: an expired
+		// token authorizes nothing, and handing them back invites a caller to use them.
+		return Claims{}, Expired, nil
 	}
-	return c, nil
+	return c, Valid, nil
 }
 
 // sign is the ONE place the MAC is computed, so signing and verifying can never

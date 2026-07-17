@@ -7,6 +7,6 @@ require (
 	github.com/tinywasm/crypto v0.0.20
 	github.com/tinywasm/fmt v0.25.3
 	github.com/tinywasm/json v0.5.11
-	github.com/tinywasm/model v0.0.14
+	github.com/tinywasm/model v0.0.16
 	github.com/tinywasm/time v0.5.0
 )

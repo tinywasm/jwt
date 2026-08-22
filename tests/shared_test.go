@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/tinywasm/base64"
-	"github.com/tinywasm/crypto"
+	"github.com/tinywasm/crypto/hmac"
 	"github.com/tinywasm/jwt"
 )
 
@@ -401,7 +401,7 @@ func test_RejectsMissingExp(t *testing.T) {
 // allowed to forge; the API is not allowed to make forging easy.
 func resign(header, payload string) string {
 	signingInput := header + "." + payload
-	return signingInput + "." + base64.URLEncode(crypto.HMACSHA256(secret, []byte(signingInput)))
+	return signingInput + "." + base64.URLEncode(hmac.HMACSHA256(secret, []byte(signingInput)))
 }
 
 func split3(t *testing.T, token string) [3]string {

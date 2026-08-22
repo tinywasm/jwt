@@ -7,7 +7,7 @@ package jwt
 
 import (
 	"github.com/tinywasm/base64"
-	"github.com/tinywasm/crypto"
+	"github.com/tinywasm/crypto/hmac"
 	"github.com/tinywasm/fmt"
 	"github.com/tinywasm/json"
 	"github.com/tinywasm/model"
@@ -163,7 +163,7 @@ func Verify(secret []byte, token string) (Claims, Outcome, error) {
 	}
 
 	expected := sign(secret, parts[0]+"."+parts[1])
-	if !crypto.HMACEqual([]byte(parts[2]), []byte(expected)) {
+	if !hmac.HMACEqual([]byte(parts[2]), []byte(expected)) {
 		return Claims{}, Forged, nil
 	}
 
@@ -201,7 +201,7 @@ func VerifyAny(secrets [][]byte, token string) (Claims, Outcome, error) {
 
 	matched := false
 	for _, s := range secrets {
-		if crypto.HMACEqual(sig, []byte(sign(s, signingInput))) {
+		if hmac.HMACEqual(sig, []byte(sign(s, signingInput))) {
 			matched = true
 		}
 	}
@@ -277,7 +277,7 @@ func DecodeUnverified(token string) (Claims, error) {
 // sign is the ONE place the MAC is computed, so signing and verifying can never
 // drift apart.
 func sign(secret []byte, signingInput string) string {
-	return base64.URLEncode(crypto.HMACSHA256(secret, []byte(signingInput)))
+	return base64.URLEncode(hmac.HMACSHA256(secret, []byte(signingInput)))
 }
 
 // now is unix seconds; tinywasm/time counts nanoseconds.

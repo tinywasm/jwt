@@ -31,6 +31,8 @@ func RunJWTTests(t *testing.T) {
 	t.Run("Leeway", test_Leeway)
 	t.Run("VerifyAny", test_VerifyAny)
 	t.Run("FromBearer", test_FromBearer)
+	t.Run("ScopedClaimsRoundTrip", test_ScopedClaimsRoundTrip)
+	t.Run("UnscopedClaimsUnaffected", test_UnscopedClaimsUnaffected)
 }
 
 var secret = []byte("a-256-bit-secret-for-the-test-abc")
@@ -210,6 +212,53 @@ func test_Interop(t *testing.T) {
 	}
 	if signed != knownToken {
 		t.Errorf("sign produced different token\ngot:  %s\nwant: %s", signed, knownToken)
+	}
+}
+
+// Aud/Scope round-trip through Sign+Verify exactly, including a Scope with
+// more than one element — the consumer-shaped test the design owes iam's
+// IssueAuthToken use case (multiple role codes in one token).
+func test_ScopedClaimsRoundTrip(t *testing.T) {
+	claims := jwt.NewScopedClaims("u1", "proj-1", []string{"admin", "editor"}, 3600)
+	tok, err := jwt.Sign(secret, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, out, err := jwt.Verify(secret, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != jwt.Valid {
+		t.Fatalf("outcome: got %v, want valid", out)
+	}
+	if c.Aud != "proj-1" {
+		t.Errorf("aud: got %q, want %q", c.Aud, "proj-1")
+	}
+	if len(c.Scope) != 2 || c.Scope[0] != "admin" || c.Scope[1] != "editor" {
+		t.Errorf("scope: got %+v, want [admin editor]", c.Scope)
+	}
+}
+
+// NewClaims (identity-only, pre-existing constructor) must keep producing
+// tokens Verify decodes with Aud=="" and Scope==nil — behaviour unchanged
+// for every caller that never touches the new fields.
+func test_UnscopedClaimsUnaffected(t *testing.T) {
+	tok, err := jwt.Sign(secret, jwt.NewClaims("u1", 3600))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, out, err := jwt.Verify(secret, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != jwt.Valid {
+		t.Fatalf("outcome: got %v, want valid", out)
+	}
+	if c.Aud != "" {
+		t.Errorf("aud: got %q, want empty", c.Aud)
+	}
+	if c.Scope != nil {
+		t.Errorf("scope: got %+v, want nil", c.Scope)
 	}
 }
 

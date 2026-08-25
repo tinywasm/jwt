@@ -93,18 +93,53 @@ type Claims struct {
 	Sub string // subject: who the token authenticates
 	Exp int64  // expiry, unix seconds
 	Iat int64  // issued at, unix seconds
+
+	// Aud is the RFC 7519 "audience" claim: who/what the token is scoped
+	// to. "" means unscoped — an identity-only token (unchanged meaning
+	// from before this field existed).
+	Aud string
+
+	// Scope lists what the subject is allowed to do within Aud. nil means
+	// no scope claims — same as Aud, an identity-only token leaves this
+	// empty. This package does not interpret these strings; a caller
+	// scoping a token to a project fills Aud with a project id and Scope
+	// with whatever role vocabulary that project uses (see
+	// veltylabs/iam's use in config/token.go) — this package never says
+	// "role" or "project", only "audience" and "scope".
+	Scope []string
 }
 
 func (c Claims) EncodeFields(w model.FieldWriter) {
 	w.String("sub", c.Sub)
 	w.Int("exp", c.Exp)
 	w.Int("iat", c.Iat)
+	// aud/scope are omitted entirely when empty (not written as ""/[]): an
+	// identity-only token must stay byte-identical to what this package
+	// produced before these fields existed — see test_Interop and
+	// test_UnscopedClaimsUnaffected.
+	if c.Aud != "" {
+		w.String("aud", c.Aud)
+	}
+	if len(c.Scope) > 0 {
+		aw := w.Array("scope", len(c.Scope))
+		for _, s := range c.Scope {
+			aw.String(s)
+		}
+		aw.Close()
+	}
 }
 func (c Claims) IsNil() bool { return false }
 func (c *Claims) DecodeFields(r model.FieldReader) {
 	c.Sub, _ = r.String("sub")
 	c.Exp, _ = r.Int("exp")
 	c.Iat, _ = r.Int("iat")
+	c.Aud, _ = r.String("aud")
+	if ar, ok := r.Array("scope"); ok {
+		c.Scope = make([]string, ar.Len())
+		for i := 0; i < ar.Len(); i++ {
+			c.Scope[i] = ar.String(i)
+		}
+	}
 }
 
 // NewClaims builds a claim set valid for ttl seconds from now.
@@ -114,6 +149,16 @@ func NewClaims(subject string, ttl int) Claims {
 	}
 	n := now()
 	return Claims{Sub: subject, Iat: n, Exp: n + int64(ttl)}
+}
+
+// NewScopedClaims builds a claim set like NewClaims, additionally scoped to
+// aud with the given scope — for tokens that authorize actions within a
+// specific audience (e.g. a project), not just identity.
+func NewScopedClaims(subject, aud string, scope []string, ttl int) Claims {
+	c := NewClaims(subject, ttl)
+	c.Aud = aud
+	c.Scope = scope
+	return c
 }
 
 // Sign returns a signed HS256 token. It refuses to mint a forgeable or meaningless

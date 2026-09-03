@@ -39,6 +39,17 @@ The two return channels mean different things, and that separation **is** the AP
 | `error` | **the caller** is broken | empty secret — a configuration bug |
 | `Outcome` | what **the token** is | `Valid`, `Expired`, `Forged` |
 
+### Quiero X → uso Y
+
+| Quiero | Uso |
+|---|---|
+| Autenticar un token que me presenta un tercero | `Verify(secret, token)` |
+| Lo mismo durante una rotación de secreto | `VerifyAny(secrets, token)` |
+| Leer un token que ya vino por un canal confiable | `DecodeFresh(token)` |
+| Sólo mostrar datos de un token, sin decidir nada | `DecodeUnverified(token)` |
+| Saber si venció | `claims.Expired()` |
+| Saber si es para mi proyecto | `claims.AllowsAudience(projectID)` |
+
 ### Frontend / Unverified Decode
 
 If you are on the frontend (browser) or an edge worker without access to the secret,

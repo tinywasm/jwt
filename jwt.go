@@ -61,6 +61,12 @@ var (
 
 	// ErrEmptySubject: a token that authenticates nobody is never what the caller meant.
 	ErrEmptySubject = fmt.Err("jwt", "subject", "empty")
+
+	// ErrExpiredToken: el token es legible y bien formado, pero su exp ya pasó.
+	// Es un error y no un Outcome porque DecodeFresh no comprueba la firma: sin
+	// firma verificada no hay veredicto sobre autenticidad que dar, y mezclar los
+	// dos canales es lo que Outcome existe para evitar.
+	ErrExpiredToken = fmt.Err("jwt", "token", "expired")
 )
 
 // DefaultTTL is the lifetime NewClaims uses when ttl <= 0.
@@ -160,6 +166,25 @@ func NewScopedClaims(subject, aud string, scope []string, ttl int) Claims {
 	c.Scope = scope
 	return c
 }
+
+// Expired reporta si el token ya venció, con la misma tolerancia de reloj
+// (Leeway) que usa Verify — para que un token que Verify llamaría vigente no
+// sea "vencido" acá por unos segundos de deriva.
+//
+// Existe porque DecodeUnverified no puede negarse a devolver un token
+// vencido (su trabajo es decodificar, no juzgar) pero el llamador SÍ tiene
+// que preguntarlo. Tener el método hace que olvidarse sea visible en la
+// revisión: un uso de DecodeUnverified sin un Expired cerca es sospechoso.
+func (c Claims) Expired() bool { return isExpired(c) }
+
+// AllowsAudience reporta si el token está acotado a aud. Un token sin Aud
+// ("" = identidad sola, sin alcance) NO satisface ninguna audiencia
+// concreta: pedir una audiencia y aceptar un token que no declara ninguna es
+// el mismo error que aceptar un token de otro proyecto.
+//
+// aud == "" pregunta "¿es un token de identidad sola?" y sólo es cierto para
+// un token sin Aud.
+func (c Claims) AllowsAudience(aud string) bool { return c.Aud == aud }
 
 // Sign returns a signed HS256 token. It refuses to mint a forgeable or meaningless
 // token rather than handing back one that merely looks fine.
@@ -271,11 +296,16 @@ func verifyWithPayload(payloadB64 string) (Claims, Outcome, error) {
 	if c.Exp <= 0 || c.Sub == "" {
 		return Claims{}, Forged, nil
 	}
-	if now() > c.Exp+Leeway {
+	if isExpired(c) {
 		return Claims{}, Expired, nil
 	}
 	return c, Valid, nil
 }
+
+// isExpired es la ÚNICA expresión que compara exp con la hora: verifyWithPayload
+// (detrás de Verify/VerifyAny) y Claims.Expired la llaman, y ninguna la
+// reescribe. Una sola regla de vencimiento (principio 4).
+func isExpired(c Claims) bool { return now() > c.Exp+Leeway }
 
 // FromBearer extracts the token from an Authorization header value.
 // A missing or non-Bearer header yields ok == false; the token is never guessed.
@@ -292,12 +322,14 @@ func FromBearer(authorizationHeader string) (token string, ok bool) {
 	return authorizationHeader[len(bearer):], true
 }
 
-// DecodeUnverified reads the claims WITHOUT checking the signature. The token is
-// UNTRUSTED input: treat the result as a display hint, never as an authorization
-// decision.
+// DecodeUnverified lee los claims SIN comprobar la firma. El token es entrada
+// NO CONFIABLE: tratá el resultado como una pista para mostrar, nunca como
+// una decisión de autorización.
 //
-// It follows the same shape requirements as Verify (3 parts, base64 valid, sub and exp
-// present).
+// Tampoco comprueba el VENCIMIENTO: exige que exp exista, pero un exp en el
+// pasado sale igual con err == nil. Si vas a usar estos claims para algo más
+// que mostrarlos, preguntá Claims.Expired() — no hay un camino que lo haga
+// por vos, porque decodificar y juzgar son trabajos distintos.
 func DecodeUnverified(token string) (Claims, error) {
 	parts := fmt.Split(token, ".")
 	if len(parts) != 3 {
@@ -315,6 +347,22 @@ func DecodeUnverified(token string) (Claims, error) {
 
 	if c.Exp <= 0 || c.Sub == "" {
 		return Claims{}, fmt.Err("jwt", "decode", "missing-claims")
+	}
+	return c, nil
+}
+
+// DecodeFresh es DecodeUnverified más el chequeo de vencimiento: devuelve
+// ErrExpiredToken si el token ya venció. Sigue SIN comprobar la firma — es
+// para el caso en que el canal ya prueba el origen (una respuesta que vino
+// por la misma llamada HTTPS al emisor), no para un token que un tercero
+// presenta.
+func DecodeFresh(token string) (Claims, error) {
+	c, err := DecodeUnverified(token)
+	if err != nil {
+		return Claims{}, err
+	}
+	if c.Expired() {
+		return Claims{}, ErrExpiredToken
 	}
 	return c, nil
 }

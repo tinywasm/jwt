@@ -159,3 +159,78 @@ once executed); this audit is the durable record of whether they were met.
 own manual `Bearer ` parsing in `server/middleware.go`; with `FromBearer`
 released in `v0.1.0` it must delete that copy and call `jwt.FromBearer`. Tracked
 in `tinywasm/user`'s own plan queue.
+
+---
+
+## Audit follow-up — 2026-09-02 (`feat(claims)`: expiry-aware decode + audience)
+
+Scope: re-audit of the consumer experience driven by findings in
+`veltylabs/iam/client`. `Sign`, `Verify` y `VerifyAny` fueron re-auditados y NO
+se tocaron: `Verify` sigue recomputando HS256 sin leer jamás el `alg` del
+header, compara el MAC en tiempo constante (`crypto.HMACEqual`) y `VerifyAny`
+recorre todos los secretos sin salida temprana. Ninguno de los hallazgos de abajo
+es una vulnerabilidad en el camino de verificación; ambos son huecos en el
+harness: cosas que el llamador tenía que acordarse de hacer.
+
+### J-1 (Bajo) · `DecodeUnverified` exige `exp` pero no lo mira — **resuelto**
+
+Exige que `exp` exista y después no lo compara con la hora: un token vencido
+salía por la puerta con `err == nil`, y el llamador real (`iam/client`) ponía el
+`Sub` como identidad autenticada sin comparar nunca `Exp`.
+
+**Decidido NO cambiar la firma ni el contrato de `DecodeUnverified`** — rompería
+a los consumidores, y su trabajo es decodificar, no juzgar. El chequeo faltante
+se resuelve de dos formas sin tocar su contrato:
+
+- `Claims.Expired() bool` — la misma regla de vencimiento que `Verify`
+  (comparten `isExpired`; la única expresión que compara `exp` con la hora).
+- `DecodeFresh(token) (Claims, error)` — `DecodeUnverified` más el chequeo de
+  vencimiento; devuelve el error nuevo `ErrExpiredToken` (`jwt token expired`).
+  Sigue sin comprobar la firma: es para el caso en que el canal ya prueba el
+  origen (una respuesta por la misma llamada HTTPS), no para un token que un
+  tercero presenta. Es un `error` y no un `Outcome` porque sin firma no hay
+  veredicto de autenticidad que dar; mezclar los dos canales es lo que `Outcome`
+  existe para evitar.
+
+Regresiones que lo fijan: `DecodeFreshRejectsExpired`, `DecodeFreshAcceptsValid`,
+`DecodeFreshDoesNotVerifySignature`, `DecodeUnverifiedStillReturnsExpired`,
+`ClaimsExpiredMatchesVerify`.
+
+### J-2 (Bajo) · No hay forma de verificar la audiencia — **resuelto**
+
+`Claims.Aud` existía desde que `iam` emite tokens acotados a un proyecto, pero
+no había helper que respondiera *"¿este token es para mí?"*; el consumidor lo
+comparaba a mano, o no lo comparaba (`iam/client` pedía un token para un
+`projectID` y nunca verificaba que el `Aud` que volvió fuera ese).
+
+**Agregado:** `Claims.AllowsAudience(aud string) bool` — comparación con `==`
+(la audiencia es un identificador público, no un secreto; `HMACEqual` aquí sería
+ruido criptográfico). Un token sin `Aud` (identidad sola) NO satisface ninguna
+audiencia concreta: pedir una audiencia y aceptar un token que no declara
+ninguna es el mismo error que aceptar un token de otro proyecto. `aud == ""`
+pregunta por un token de identidad sola.
+
+Regresiones: `AllowsAudienceExact`, `AllowsAudienceRejectsOther`,
+`AllowsAudienceRejectsUnscoped` (el caso peligroso), `AllowsAudienceIdentityOnly`.
+
+### Agregado en total
+
+- `isExpired(exp)` no exportada: la única comparación `now > exp+Leeway`, en un
+  solo lugar (principio "una sola forma de hacer cada cosa"); la usa
+  `verifyWithPayload` y `Claims.Expired`.
+- `Claims.Expired`, `Claims.AllowsAudience`, `DecodeFresh`, `ErrExpiredToken`.
+- Test consumer-shaped `ConsumerValidatesAProjectScopedToken` que reproduce el
+  uso de `iam/client`: firmar con `NewScopedClaims(sub, "proj-1", [admin], ttl)`,
+  decodificar con `DecodeFresh` y responder en tres llamadas obvias (a) no
+  venció, (b) es para `proj-1`, (c) no es para `proj-2`.
+
+### NO cambiado (explícito)
+
+- `Verify`, `VerifyAny`, `Sign`: cuerpos intactos; el comentario que prohíbe
+  leer `alg` sigue en su lugar.
+- `DecodeUnverified`: firma y contrato intactos.
+- Serialización de `Claims` sin `Aud`/`Scope`: sigue omitiendo los campos
+  (regresiones `UnscopedClaimsStillByteIdentical` y `UnscopedClaimsUnaffected`
+  verdes).
+- Token format y signing input: sin cambios — no se requirió per Plan,
+  consumidores con tokens ya emitidos no se ven afectados.
